@@ -210,6 +210,12 @@ func (m *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			klog.ErrorS(err, "Failed to close the writer")
 		}
 	}
+
+	// version from prom client:
+	// this requires exposing metrics as a metricFamily
+	// contentType = expfmt.Negotiate(req.Header)
+	// enc := expfmt.NewEncoder(w, contentType)
+
 }
 
 func shardingSettingsFromStatefulSet(ss *appsv1.StatefulSet, podName string) (nominal int32, totalReplicas int, err error) {

@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"k8s.io/kube-state-metrics/v2/pkg/metric"
+	"k8s.io/kube-state-metrics/v2/pkg/util/strings"
 )
 
 // MetricsStore implements the k8s.io/client-go/tools/cache.Store
@@ -36,23 +37,23 @@ type MetricsStore struct {
 	// metric families, containing a slice of metrics. We need to keep metrics
 	// grouped by metric families in order to zip families with their help text in
 	// MetricsStore.WriteAll().
-	metrics map[types.UID][][]byte
+	metrics map[types.UID][]*metric.Family
 	// headers contains the header (TYPE and HELP) of each metric family. It is
-	// later on zipped with with their corresponding metric families in
+	// later on zipped with their corresponding metric families in
 	// MetricStore.WriteAll().
 	headers []string
 
 	// generateMetricsFunc generates metrics based on a given Kubernetes object
 	// and returns them grouped by metric family.
-	generateMetricsFunc func(interface{}) []metric.FamilyInterface
+	generateMetricsFunc func(interface{}) []*metric.Family
 }
 
 // NewMetricsStore returns a new MetricsStore
-func NewMetricsStore(headers []string, generateFunc func(interface{}) []metric.FamilyInterface) *MetricsStore {
+func NewMetricsStore(headers []string, generateFunc func(interface{}) []*metric.Family) *MetricsStore {
 	return &MetricsStore{
 		generateMetricsFunc: generateFunc,
 		headers:             headers,
-		metrics:             map[types.UID][][]byte{},
+		metrics:             map[types.UID][]*metric.Family{},
 	}
 }
 
@@ -70,13 +71,9 @@ func (s *MetricsStore) Add(obj interface{}) error {
 	defer s.mutex.Unlock()
 
 	families := s.generateMetricsFunc(obj)
-	familyStrings := make([][]byte, len(families))
+	s.internStrings(families)
 
-	for i, f := range families {
-		familyStrings[i] = f.ByteSlice()
-	}
-
-	s.metrics[o.GetUID()] = familyStrings
+	s.metrics[o.GetUID()] = families
 
 	return nil
 }
@@ -127,7 +124,7 @@ func (s *MetricsStore) GetByKey(key string) (item interface{}, exists bool, err 
 // given list.
 func (s *MetricsStore) Replace(list []interface{}, _ string) error {
 	s.mutex.Lock()
-	s.metrics = map[types.UID][][]byte{}
+	s.metrics = map[types.UID][]*metric.Family{}
 	s.mutex.Unlock()
 
 	for _, o := range list {
@@ -147,6 +144,7 @@ func (s *MetricsStore) Resync() error {
 
 // WriteAll writes all metrics of the store into the given writer, zipped with the
 // help text of each metric family.
+// TODO: extract this out, use promhttp encoding to support different exposition formats
 func (s *MetricsStore) WriteAll(w io.Writer) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
@@ -155,7 +153,25 @@ func (s *MetricsStore) WriteAll(w io.Writer) {
 		w.Write([]byte(help))
 		w.Write([]byte{'\n'})
 		for _, metricFamilies := range s.metrics {
-			w.Write(metricFamilies[i])
+			w.Write(metricFamilies[i].ByteSlice())
+		}
+	}
+}
+
+// should make this a global thing...
+func (s *MetricsStore) internStrings(families []*metric.Family) {
+	for i, f := range families {
+		families[i].Type = strings.InternString(families[i].Type)
+		for j, m := range f.Metrics {
+			for k, l := range m.LabelKeys {
+				families[i].Metrics[j].LabelKeys[k] = strings.InternString(l)
+			}
+
+			// if we skip interning values, we could probably keep the map around forever?
+			// Let's benchmark this first to see what it looks like...
+			for k, l := range m.LabelValues {
+				families[i].Metrics[j].LabelValues[k] = strings.InternString(l)
+			}
 		}
 	}
 }
